@@ -37,24 +37,26 @@ type LeaseLock struct {
 
 // Get returns the election record from a Lease spec
 func (ll *LeaseLock) Get() (*LeaderElectionRecord, error) {
-	var err error
-	ll.lease, err = ll.Client.Leases(ll.LeaseMeta.Namespace).Get(ll.LeaseMeta.Name, metav1.GetOptions{})
+	lease, err := ll.Client.Leases(ll.LeaseMeta.Namespace).Get(ll.LeaseMeta.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
+	ll.lease = lease
 	return LeaseSpecToLeaderElectionRecord(&ll.lease.Spec), nil
 }
 
 // Create attempts to create a Lease
 func (ll *LeaseLock) Create(ler LeaderElectionRecord) error {
-	var err error
-	ll.lease, err = ll.Client.Leases(ll.LeaseMeta.Namespace).Create(&coordinationv1.Lease{
+    lease, err := ll.Client.Leases(ll.LeaseMeta.Namespace).Create(&coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ll.LeaseMeta.Name,
 			Namespace: ll.LeaseMeta.Namespace,
 		},
 		Spec: LeaderElectionRecordToLeaseSpec(&ler),
 	})
+	if err == nil {
+		ll.lease = lease
+	}
 	return err
 }
 
@@ -63,9 +65,12 @@ func (ll *LeaseLock) Update(ler LeaderElectionRecord) error {
 	if ll.lease == nil {
 		return errors.New("lease not initialized, call get or create first")
 	}
-	ll.lease.Spec = LeaderElectionRecordToLeaseSpec(&ler)
-	var err error
-	ll.lease, err = ll.Client.Leases(ll.LeaseMeta.Namespace).Update(ll.lease)
+	lease := *ll.lease
+	lease.Spec = LeaderElectionRecordToLeaseSpec(&ler)
+    _, err := ll.Client.Leases(ll.LeaseMeta.Namespace).Update(&lease)
+	if err != nil {
+		ll.lease = &lease
+	}
 	return err
 }
 

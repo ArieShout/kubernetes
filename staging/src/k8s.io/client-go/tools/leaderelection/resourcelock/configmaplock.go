@@ -43,11 +43,11 @@ type ConfigMapLock struct {
 // Get returns the election record from a ConfigMap Annotation
 func (cml *ConfigMapLock) Get() (*LeaderElectionRecord, error) {
 	var record LeaderElectionRecord
-	var err error
-	cml.cm, err = cml.Client.ConfigMaps(cml.ConfigMapMeta.Namespace).Get(cml.ConfigMapMeta.Name, metav1.GetOptions{})
+	cm, err := cml.Client.ConfigMaps(cml.ConfigMapMeta.Namespace).Get(cml.ConfigMapMeta.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
+	cml.cm = cm
 	if cml.cm.Annotations == nil {
 		cml.cm.Annotations = make(map[string]string)
 	}
@@ -65,7 +65,7 @@ func (cml *ConfigMapLock) Create(ler LeaderElectionRecord) error {
 	if err != nil {
 		return err
 	}
-	cml.cm, err = cml.Client.ConfigMaps(cml.ConfigMapMeta.Namespace).Create(&v1.ConfigMap{
+	cm, err := cml.Client.ConfigMaps(cml.ConfigMapMeta.Namespace).Create(&v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cml.ConfigMapMeta.Name,
 			Namespace: cml.ConfigMapMeta.Namespace,
@@ -74,6 +74,9 @@ func (cml *ConfigMapLock) Create(ler LeaderElectionRecord) error {
 			},
 		},
 	})
+	if err == nil {
+		cml.cm = cm
+	}
 	return err
 }
 
@@ -86,8 +89,12 @@ func (cml *ConfigMapLock) Update(ler LeaderElectionRecord) error {
 	if err != nil {
 		return err
 	}
-	cml.cm.Annotations[LeaderElectionRecordAnnotationKey] = string(recordBytes)
-	cml.cm, err = cml.Client.ConfigMaps(cml.ConfigMapMeta.Namespace).Update(cml.cm)
+	cm := *cml.cm
+	cm.Annotations[LeaderElectionRecordAnnotationKey] = string(recordBytes)
+	_, err = cml.Client.ConfigMaps(cml.ConfigMapMeta.Namespace).Update(&cm)
+	if err == nil {
+		cml.cm = &cm
+	}
 	return err
 }
 

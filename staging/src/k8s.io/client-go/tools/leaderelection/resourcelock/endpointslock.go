@@ -38,11 +38,11 @@ type EndpointsLock struct {
 // Get returns the election record from a Endpoints Annotation
 func (el *EndpointsLock) Get() (*LeaderElectionRecord, error) {
 	var record LeaderElectionRecord
-	var err error
-	el.e, err = el.Client.Endpoints(el.EndpointsMeta.Namespace).Get(el.EndpointsMeta.Name, metav1.GetOptions{})
+	e, err := el.Client.Endpoints(el.EndpointsMeta.Namespace).Get(el.EndpointsMeta.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
+	el.e = e
 	if el.e.Annotations == nil {
 		el.e.Annotations = make(map[string]string)
 	}
@@ -60,7 +60,7 @@ func (el *EndpointsLock) Create(ler LeaderElectionRecord) error {
 	if err != nil {
 		return err
 	}
-	el.e, err = el.Client.Endpoints(el.EndpointsMeta.Namespace).Create(&v1.Endpoints{
+	e, err := el.Client.Endpoints(el.EndpointsMeta.Namespace).Create(&v1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      el.EndpointsMeta.Name,
 			Namespace: el.EndpointsMeta.Namespace,
@@ -69,6 +69,9 @@ func (el *EndpointsLock) Create(ler LeaderElectionRecord) error {
 			},
 		},
 	})
+	if err == nil {
+		el.e = e
+	}
 	return err
 }
 
@@ -81,8 +84,12 @@ func (el *EndpointsLock) Update(ler LeaderElectionRecord) error {
 	if err != nil {
 		return err
 	}
-	el.e.Annotations[LeaderElectionRecordAnnotationKey] = string(recordBytes)
-	el.e, err = el.Client.Endpoints(el.EndpointsMeta.Namespace).Update(el.e)
+	e := *el.e
+	e.Annotations[LeaderElectionRecordAnnotationKey] = string(recordBytes)
+	_, err = el.Client.Endpoints(el.EndpointsMeta.Namespace).Update(&e)
+	if err == nil {
+		el.e = &e
+	}
 	return err
 }
 

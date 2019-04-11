@@ -17,6 +17,7 @@ limitations under the License.
 package leaderelection
 
 import (
+    "context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -289,7 +290,7 @@ func testTryAcquireOrRenew(t *testing.T, objectType string) {
 				clock:          clock.RealClock{},
 			}
 
-			if test.expectSuccess != le.tryAcquireOrRenew() {
+			if test.expectSuccess != le.tryAcquireOrRenew(context.TODO()) {
 				t.Errorf("unexpected result of tryAcquireOrRenew: [succeeded=%v]", !test.expectSuccess)
 			}
 
@@ -325,6 +326,144 @@ func TestTryAcquireOrRenewConfigMaps(t *testing.T) {
 // Will test leader election using lease as the resource
 func TestTryAcquireOrRenewLeases(t *testing.T) {
 	testTryAcquireOrRenew(t, "leases")
+}
+
+func TestTryAcquireOrRenewCancelOnGet(t *testing.T) {
+	objectType := "configmaps"
+
+	reactors := []struct {
+		verb     string
+		reaction fakeclient.ReactionFunc
+	}{
+		{
+			verb: "get",
+			reaction: func(action fakeclient.Action) (handled bool, ret runtime.Object, err error) {
+				return true, createLockObject(objectType, action.GetNamespace(), action.(fakeclient.GetAction).GetName(), rl.LeaderElectionRecord{HolderIdentity: "baz"}), nil
+			},
+		},
+	}
+
+	objectMeta := metav1.ObjectMeta{Namespace: "foo", Name: "bar"}
+	resourceLockConfig := rl.ResourceLockConfig{
+		Identity:      "baz",
+		EventRecorder: &record.FakeRecorder{},
+	}
+	c := &fake.Clientset{}
+	for _, reactor := range reactors {
+		c.AddReactor(reactor.verb, objectType, reactor.reaction)
+	}
+	c.AddReactor("*", "*", func(action fakeclient.Action) (bool, runtime.Object, error) {
+		t.Errorf("unreachable action. testclient called too many times: %+v", action)
+		return true, nil, fmt.Errorf("unreachable action")
+	})
+
+	lock := &rl.ConfigMapLock{
+		ConfigMapMeta: objectMeta,
+		LockConfig:    resourceLockConfig,
+		Client:        c.CoreV1(),
+	}
+
+	lec := LeaderElectionConfig{
+		Lock:          lock,
+		LeaseDuration: 10 * time.Second,
+	}
+	le := &LeaderElector{
+		config:         lec,
+		observedRecord: rl.LeaderElectionRecord{},
+		observedTime:   time.Time{},
+		clock:          clock.RealClock{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if le.tryAcquireOrRenew(ctx) {
+		t.Errorf("unexpected result of tryAcquireOrRenew: [succeeded=true]")
+	}
+
+	if le.observedRecord != (rl.LeaderElectionRecord{}) {
+		t.Errorf("observedRecord should not be assigned in cancelled context")
+	}
+	if le.observedTime != (time.Time{}) {
+		t.Errorf("observedTime should not be assigned in cancelled context")
+	}
+}
+
+func TestTryAcquireOrRenewCancelOnUpdate(t *testing.T) {
+	objectType := "configmaps"
+
+	calledUpdate := make(chan struct{})
+	cancelled := make(chan struct{})
+
+	reactors := []struct {
+		verb     string
+		reaction fakeclient.ReactionFunc
+	}{
+		{
+			verb: "get",
+			reaction: func(action fakeclient.Action) (handled bool, ret runtime.Object, err error) {
+				return true, createLockObject(objectType, action.GetNamespace(), action.(fakeclient.GetAction).GetName(), rl.LeaderElectionRecord{HolderIdentity: "baz"}), nil
+			},
+		},
+		{
+			verb: "update",
+			reaction: func(action fakeclient.Action) (handled bool, ret runtime.Object, err error) {
+				close(calledUpdate)
+				<-cancelled
+				return true, action.(fakeclient.CreateAction).GetObject(), nil
+			},
+		},
+	}
+
+	objectMeta := metav1.ObjectMeta{Namespace: "foo", Name: "bar"}
+	resourceLockConfig := rl.ResourceLockConfig{
+		Identity:      "baz",
+		EventRecorder: &record.FakeRecorder{},
+	}
+	c := &fake.Clientset{}
+	for _, reactor := range reactors {
+		c.AddReactor(reactor.verb, objectType, reactor.reaction)
+	}
+	c.AddReactor("*", "*", func(action fakeclient.Action) (bool, runtime.Object, error) {
+		t.Errorf("unreachable action. testclient called too many times: %+v", action)
+		return true, nil, fmt.Errorf("unreachable action")
+	})
+
+	lock := &rl.ConfigMapLock{
+		ConfigMapMeta: objectMeta,
+		LockConfig:    resourceLockConfig,
+		Client:        c.CoreV1(),
+	}
+
+	lec := LeaderElectionConfig{
+		Lock:          lock,
+		LeaseDuration: 10 * time.Second,
+	}
+	le := &LeaderElector{
+		config:         lec,
+		observedRecord: rl.LeaderElectionRecord{HolderIdentity: "baz"},
+		observedTime:   time.Time{},
+		clock:          clock.RealClock{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer close(cancelled)
+		<-calledUpdate
+		cancel()
+	}()
+
+	if le.tryAcquireOrRenew(ctx) {
+		t.Errorf("unexpected result of tryAcquireOrRenew: [succeeded=true]")
+	}
+
+	if le.observedRecord != (rl.LeaderElectionRecord{HolderIdentity: "baz"}) {
+		t.Errorf("observedRecord should not be assigned in cancelled context")
+	}
+
+	if le.observedTime != (time.Time{}) {
+		t.Errorf("observedTime should not be assigned in cancelled context")
+	}
 }
 
 func TestLeaseSpecToLeaderElectionRecordRoundTrip(t *testing.T) {
